@@ -1,7 +1,0 @@
-# Pure IPTV Player — Python dependencies for Arch Linux / source runs.
-# Все ключевые системные библиотеки ставятся из пакетов Arch (см. README.md);
-# здесь только Python-биндинги, которые обычно ставятся через pip.
-
-PySide6>=6.5
-requests>=2.31
-python-mpv>=1.0

@@ -1,41 +1,190 @@
-name: Auto Unpack TAR ZST Archive 
+name: 📦 Auto-extract .tar.zst archives
+
+# ─────────────────────────────────────────────────────────────
+# Этот workflow автоматически распаковывает любой .tar.zst архив,
+# появляющийся в репозитории, и переносит его содержимое (из
+# единственной корневой папки архива) прямо в корень репозитория.
+#
+# Пример: iptv-player-1.0.0.tar.zst
+#   внутри:  iptv-player-1.0.0/{main.py, main.qml, PKGBUILD, …}
+#   после:   /main.py, /main.qml, /PKGBUILD, …  (в корне репо)
+# ─────────────────────────────────────────────────────────────
 
 on:
   push:
-    branches:
-      - main
+    paths:
+      - '**/*.tar.zst'
+      - '*.tar.zst'
+  workflow_dispatch:
+    inputs:
+      archive_name:
+        description: 'Конкретный архив для распаковки (пусто = все .tar.zst)'
+        required: false
+        type: string
+
+# Не запускать одновременно несколько инстансов
+concurrency:
+  group: extract-tar-zst
+  cancel-in-progress: false
+
+# Нужны права на коммит
+permissions:
+  contents: write
 
 jobs:
-  unpack:
+  extract-tar-zst:
+    name: 📦 Extract & flatten
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      # ─── 1. Чекаут репозитория ───────────────────────────────
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Unpack and Delete Any ZST Archive
-      run: |
-        ARCHIVE=$(ls *.tar.zst 2>/dev/null | head -n 1)
-        
-        if [ -n "$ARCHIVE" ]; then
-          echo "Found: $ARCHIVE"
-          tar --zstd -xf "$ARCHIVE"
-          rm "$ARCHIVE"
-        else
-          echo "No .tar.zst found"
-        fi
+      # ─── 2. Гарантируем наличие zstd ─────────────────────────
+      - name: 🔧 Ensure zstd is installed
+        run: |
+          if ! command -v zstd >/dev/null 2>&1; then
+            echo "ℹ️  zstd не найден, устанавливаю..."
+            sudo apt-get update -qq
+            sudo apt-get install -y zstd
+          fi
+          zstd --version | head -1 || true
+          tar --version | head -1
 
-    - name: Commit and Push changes
-      run: |
-        git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@://github.com"
-        
-        git add .
-        
-        if git diff-index --quiet HEAD --; then
-          echo "No changes"
-        else
-          git commit -m "Auto-unpack [skip ci]"
+      # ─── 3. Ищем .tar.zst архивы ─────────────────────────────
+      - name: 🔍 Find .tar.zst archives
+        id: find
+        run: |
+          # Если запущено вручную и указано имя конкретного архива —
+          # работаем только с ним.
+          if [ -n "${{ inputs.archive_name }}" ]; then
+            specific="${{ inputs.archive_name }}"
+            if [ ! -f "$specific" ]; then
+              echo "❌ Файл не найден: $specific"
+              echo "HAS_ARCHIVES=false" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "$specific" > /tmp/archives.txt
+            echo "📦 Ручной запуск: распаковываю только '$specific'"
+          else
+            # Ищем все .tar.zst файлы, исключая .git
+            mapfile -t archives < <(
+              find . -path ./.git -prune -o \
+                     -type f -name '*.tar.zst' -print 2>/dev/null \
+                | grep -v '^\./\.git/' \
+                | sort
+            )
+            if [ ${#archives[@]} -eq 0 ]; then
+              echo "ℹ️  Архивов .tar.zst в репозитории не найдено — нечего делать."
+              echo "HAS_ARCHIVES=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            printf '%s\n' "${archives[@]}" > /tmp/archives.txt
+            echo "📦 Найдено ${#archives[@]} архив(ов):"
+            printf '   • %s\n' "${archives[@]}"
+          fi
+          echo "HAS_ARCHIVES=true" >> "$GITHUB_OUTPUT"
+
+      # ─── 4. Распаковка и выравнивание в корень ───────────────
+      - name: 📦 Extract and flatten to repo root
+        if: steps.find.outputs.HAS_ARCHIVES == 'true'
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r archive; do
+            # Пустые строки (например, trailing newline в файле) — пропускаем
+            [ -z "$archive" ] && continue
+
+            echo ""
+            echo "═══════════════════════════════════════════════════════"
+            echo "📦  Обрабатываю: $archive"
+            echo "═══════════════════════════════════════════════════════"
+
+            tmpdir=$(mktemp -d)
+
+            # Распаковываем во временную папку
+            echo "🔓 Распаковываю..."
+            tar --zstd -xf "$archive" -C "$tmpdir"
+
+            # Изучаем верхний уровень архива
+            mapfile -t top_entries < <(ls -A "$tmpdir")
+            top_count=${#top_entries[@]}
+
+            echo "📂  Верхний уровень архива ($top_count элемент(ов)):"
+            for e in "${top_entries[@]}"; do
+              if [ -d "$tmpdir/$e" ]; then
+                echo "    📁  $e/"
+              else
+                echo "    📄  $e"
+              fi
+            done
+
+            # ─── УМНАЯ ЛОГИКА ВЫРАВНИВАНИЯ ─────────────────────
+            # Случай A: единственная папка на верхнем уровне →
+            #          это «корень релиза», переносим её содержимое.
+            # Случай B: несколько элементов или файлы напрямую →
+            #          переносим как есть.
+            if [ "$top_count" -eq 1 ] && [ -d "$tmpdir/${top_entries[0]}" ]; then
+              root_dir="${top_entries[0]}"
+              echo ""
+              echo "✅  Корневая папка релиза: '$root_dir/'"
+              echo "➡️   Переношу содержимое '$root_dir/' → ./ (корень репо)"
+
+              shopt -s dotglob nullglob
+              # Копируем, чтобы не потерять оригинал при ошибке
+              cp -r "$tmpdir/$root_dir"/. .
+              shopt -u dotglob nullglob
+            else
+              echo ""
+              echo "➡️   Переношу все элементы верхнего уровня → ./"
+              shopt -s dotglob nullglob
+              cp -r "$tmpdir"/. .
+              shopt -u dotglob nullglob
+            fi
+
+            # Удаляем временную папку
+            rm -rf "$tmpdir"
+
+            echo ""
+            echo "✅  $archive — готово."
+          done < /tmp/archives.txt
+
+          echo ""
+          echo "═══════════════════════════════════════════════════════"
+          echo "🎉  Все архивы распакованы!"
+          echo "═══════════════════════════════════════════════════════"
+
+      # ─── 5. Показываем итоговое состояние репо ───────────────
+      - name: 📊 Show repository state after extraction
+        if: steps.find.outputs.HAS_ARCHIVES == 'true'
+        run: |
+          echo "📁 Содержимое репозитория:"
+          ls -la
+          echo ""
+          echo "📊 Всего файлов: $(find . -type f -not -path './.git/*' | wc -l)"
+
+      # ─── 6. Коммитим результат ───────────────────────────────
+      - name: 💾 Commit extracted files
+        if: steps.find.outputs.HAS_ARCHIVES == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "ℹ️  Изменений нет (содержимое архива уже в репо)."
+            exit 0
+          fi
+
+          # Формируем красивое сообщение со списком распакованных архивов
+          archives_list=$(cat /tmp/archives.txt | grep -v '^$' | sed 's/^/- /' | head -10)
+          git commit -m "📦 Auto-extract .tar.zst archives" \
+                     -m "Распаковано автоматически через .github/workflows/unzip.yml:" \
+                     -m "$archives_list"
           git push
-        fi
-        
+          echo "✅ Изменения отправлены в репозиторий."
+          

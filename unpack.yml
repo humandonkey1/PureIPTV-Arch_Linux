@@ -1,0 +1,41 @@
+name: Auto Unpack TAR ZST Archive 
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Unpack and Delete Any ZST Archive
+      run: |
+        ARCHIVE=$(ls *.tar.zst 2>/dev/null | head -n 1)
+        
+        if [ -n "$ARCHIVE" ]; then
+          echo "Found: $ARCHIVE"
+          tar --zstd -xf "$ARCHIVE"
+          rm "$ARCHIVE"
+        else
+          echo "No .tar.zst found"
+        fi
+
+    - name: Commit and Push changes
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@://github.com"
+        
+        git add .
+        
+        if git diff-index --quiet HEAD --; then
+          echo "No changes"
+        else
+          git commit -m "Auto-unpack [skip ci]"
+          git push
+        fi
+        

@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Pure IPTV Player
+GenericName=IPTV Player
+Comment=Modern IPTV client with adaptive layout for PC, Tablet, Phone and TV
+Comment[ru]=Современный IPTV-плеер с адаптивной вёрсткой под ПК, планшет, телефон и ТВ
+Exec=iptv-player %F
+Icon=iptv-player
+Terminal=false
+StartupNotify=true
+Categories=AudioVideo;Video;Network;TV;
+MimeType=text/x-m3u;text/x-m3u8;application/x-mpegURL;
+Keywords=iptv;m3u;xtream;stalker;hls;tv;streaming;player;
+Keywords[ru]=iptv;тв;телевидение;стрим;плеер;плейлист;m3u;
+StartupWMClass=iptv-player
